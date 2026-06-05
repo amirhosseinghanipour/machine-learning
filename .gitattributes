@@ -1,0 +1,18 @@
+# Normalize all text files to LF in the repository (prevents CRLF noise across platforms)
+* text=auto eol=lf
+
+# Explicitly keep code/docs as LF
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Treat common binaries as binary (future-proofing)
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.ipynb binary

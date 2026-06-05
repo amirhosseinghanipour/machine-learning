@@ -1,0 +1,34 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "machine-learning",
+  "description": "Research-grade machine learning skill for Claude Code — the full field (foundations, deep learning, transformers/LLMs, diffusion, RL, probabilistic ML) plus the rigor that makes results trustworthy.",
+  "owner": {
+    "name": "Amirhossein Ghanipour"
+  },
+  "plugins": [
+    {
+      "name": "machine-learning",
+      "source": "./plugins/machine-learning",
+      "description": "Research-grade machine learning expertise: foundations and learning theory, classical ML, deep learning, transformers and LLMs, generative models (diffusion/flow matching), reinforcement learning, probabilistic/Bayesian ML, graph/geometric and representation learning — plus evaluation and statistics, reproducibility, distributed training, data curation, interpretability/safety, and the research workflow. Methodology-first: it teaches how to produce results that are correct, fairly measured, and reproducible.",
+      "category": "development",
+      "author": {
+        "name": "Amirhossein Ghanipour",
+        "url": "https://github.com/amirhosseinghanipour"
+      },
+      "homepage": "https://github.com/amirhosseinghanipour/machine-learning",
+      "keywords": [
+        "machine-learning",
+        "deep-learning",
+        "transformers",
+        "llm",
+        "diffusion",
+        "reinforcement-learning",
+        "pytorch",
+        "jax",
+        "statistics",
+        "reproducibility",
+        "research"
+      ]
+    }
+  ]
+}

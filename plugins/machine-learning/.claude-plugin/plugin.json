@@ -1,0 +1,27 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "machine-learning",
+  "version": "1.0.0",
+  "description": "Research-grade machine learning expertise spanning the whole field, plus the rigor (experimental design, evaluation/statistics, reproducibility) that makes results trustworthy. Methodology-first; covers classical ML, deep learning, transformers/LLMs, generative models, RL, probabilistic ML, graph/geometric and representation learning, scaling, data, interpretability/safety, and the research workflow.",
+  "author": {
+    "name": "Amirhossein Ghanipour",
+    "url": "https://github.com/amirhosseinghanipour"
+  },
+  "homepage": "https://github.com/amirhosseinghanipour/machine-learning",
+  "license": "MIT",
+  "keywords": [
+    "machine-learning",
+    "deep-learning",
+    "transformers",
+    "llm",
+    "diffusion",
+    "flow-matching",
+    "reinforcement-learning",
+    "probabilistic-ml",
+    "pytorch",
+    "jax",
+    "statistics",
+    "reproducibility",
+    "research"
+  ]
+}
