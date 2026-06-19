@@ -16,10 +16,19 @@ This complements the rigor in [evaluation-statistics.md](evaluation-statistics.m
   protocol).
 - **How to find the frontier:** start from a strong recent survey, then trace **forward citations** (who built
   on this) and **backward** (what it builds on). Follow a few groups/authors, not hype threads. Find the
-  canonical paper for each method, not a blog summary of it.
-- **Healthy skepticism:** extraordinary claims need extraordinary evidence and reproduction. Single-paper SOTA,
-  no code, no variance, cherry-picked qualitatives → discount heavily. The reproduction track record of a result
-  matters more than its venue.
+  canonical paper for each method, not a blog summary of it. Tools: Semantic Scholar / **Connected Papers** /
+  **Litmaps** for citation-graph exploration, **alphaXiv / arXiv-sanity** for discussion, Zotero (with the
+  Better BibTeX plugin) as the source of truth.
+- **AI-assisted search, used carefully (2026):** LLM "deep research" agents and tools (Elicit, Undermind,
+  SciSpace, etc.) are excellent for *recall* — casting a wide net and surfacing papers you'd miss — but they
+  **hallucinate citations and misstate results**. Use them to find candidates, then **verify every claim and
+  bibentry against the actual PDF**. Never cite a paper you haven't opened. Disclose substantive LLM assistance
+  per venue policy.
+- **Healthy skepticism (more necessary than ever):** arXiv volume has exploded with LLM-assisted writing, so the
+  noise floor is higher — extraordinary claims need extraordinary evidence and reproduction. Single-paper SOTA,
+  no code, no variance, cherry-picked qualitatives → discount heavily. The **reproduction track record** of a
+  result matters more than its venue or citation count. Prefer results that survived independent replication,
+  open code/checkpoints, and ablations over headline-grabbing first claims.
 
 ## 2. Reading a paper efficiently (three passes)
 
@@ -36,10 +45,15 @@ This complements the rigor in [evaluation-statistics.md](evaluation-statistics.m
 
 ## 3. Reproducing prior work (a research skill in itself)
 
-The MLRC (now an official NeurIPS track) exists because reproduction is hard and valuable.
+The **ML Reproducibility Challenge (MLRC)** is now an official NeurIPS 2026 track (reproductions are published
+via TMLR, then admitted) — reproduction is recognized first-class science, not busywork.
 - **Start from authors' code** if released; pin its environment; reproduce the headline number *first* before
   changing anything. If it doesn't reproduce, that itself is a finding — debug systematically (data version,
-  preprocessing, eval protocol, seeds).
+  preprocessing, eval protocol, seeds, library/CUDA versions, and **non-determinism** from GPU ops, see
+  [experimentation-reproducibility.md](experimentation-reproducibility.md)).
+- **Reproduce the eval, not just the train.** A large share of irreproducibility is **evaluation-protocol
+  drift**: different decontamination, prompt templates, metric implementations, or scoring scripts. Run the
+  *authors'* eval harness on a known checkpoint and match their number before trusting your own pipeline.
 - **From scratch:** implement, then climb the debugging ladder (overfit one batch, check loss-at-init — see
   [deep-learning.md](deep-learning.md) §4). Match the paper's exact protocol (splits, metric, preprocessing) or
   comparisons are meaningless.
@@ -94,7 +108,15 @@ and notation consistent throughout.
   units. Truncated/misleading axes are a credibility killer.
 - **Tables:** bold the best, mark significance, include the strong baseline and the variance, state what's
   compared. Don't copy numbers from other papers run on a different protocol — re-run baselines (see SKILL.md).
-- **Accessibility:** colorblind-safe palettes, legible fonts at print size, vector formats.
+- **Accessibility & craft:** colorblind-safe palettes (avoid red/green pairing; viridis/cividis for sequential,
+  a perceptually-uniform diverging map otherwise), legible fonts **at print size** (match the paper's font, ~7–9pt
+  in-figure; check at the column width you'll actually use), and **vector formats** (PDF/SVG, not rasterized
+  PNG of a plot). Embed fonts. Keep one visual language (colors=methods, linestyles=variants) consistent across
+  every figure so the reader learns it once.
+- **The hero figure earns acceptance.** Page-1 method/teaser figures are where a rushed reviewer forms their
+  prior — invest disproportionately. It should convey the core idea without the text. Avoid 3D bar charts,
+  dual y-axes, and chartjunk. For learning curves use steps/tokens/FLOPs (not just epochs) on the x-axis so
+  comparisons are compute-matched (see SKILL.md §2).
 
 ## 7. Peer review (giving and receiving)
 
@@ -103,9 +125,17 @@ and notation consistent throughout.
   rigor items (fair baselines, variance, leakage, significance). Acknowledge strengths. Calibrate confidence;
   don't reject for missing a citation if the core is sound.
 - **Rebuttals:** address the actual concern, run the requested experiment if feasible, concede what's fair,
-  and be concise and professional. Reviewers are time-pressed humans; make it easy to raise the score.
-- **The norms:** confidentiality, no dual submission, conflict-of-interest disclosure, and (increasingly)
-  scrutiny of LLM-assisted reviewing — review with integrity.
+  and be concise and professional. Open with a short summary of changes; map each response to the specific
+  reviewer point; put new results in a clearly-marked table. Reviewers are time-pressed humans; make it easy to
+  raise the score. Don't relitigate the reviewer's taste — answer factual/technical objections with evidence.
+- **The norms (2026):** confidentiality (don't upload submissions to external LLM services — it breaks
+  confidentiality and most venues now **prohibit pasting papers into third-party LLMs**), no dual submission,
+  conflict-of-interest disclosure. **LLM use is policy-governed at NeurIPS/ICML/ICLR 2026:** authors may use
+  LLMs but **remain fully responsible** for all content (AI-generated plagiarism or fabricated citations =
+  misconduct; "AI slop" submissions are explicitly discouraged/desk-rejectable), and **methodologically
+  significant LLM/agent use must be disclosed**. Reviewers must follow their console's stated LLM policy;
+  fabricated or clearly LLM-generated reviews are sanctionable. Review with integrity — a hallucinated weakness
+  wastes everyone's time.
 
 ## 8. Ethics, broader impact & open science
 
@@ -115,7 +145,11 @@ and notation consistent throughout.
 - **Responsible release:** datasheets for datasets and model cards for models (intended use, limitations, biases,
   evaluation). Consider release strategy for dual-use capabilities (staged/gated release where warranted).
 - **Open science:** release code, configs, seeds, and (where possible) data and checkpoints — it's both an
-  ethical norm and the thing that makes your work cited and trusted. Reproducibility is a contribution.
+  ethical norm and the thing that makes your work cited and trusted. Practical: a **README that reproduces the
+  headline table with one command**, pinned environment (lockfile/Docker), the exact eval harness, and a
+  permissive license; archive an immutable snapshot (Zenodo DOI / `git tag`); release **model + data cards** and
+  a `requirements`/`environment` lock. Anonymize for double-blind review (anonymous repo). For models, state the
+  license and any use restrictions; for data, the provenance and consent basis.
 - **Integrity:** report negative results and failures honestly; never p-hack, seed-hack, cherry-pick, or
   tune-on-test (see the anti-patterns in SKILL.md §6). Properly attribute prior work and disclose AI assistance
   per venue policy. The reputational and scientific cost of a non-replicable result far exceeds the short-term
@@ -131,6 +165,8 @@ and notation consistent throughout.
 - [ ] Limitations stated honestly; ethics/broader impact engaged.
 - [ ] Code/configs/seeds released; results reproduce within CI (see experimentation-reproducibility.md).
 
-**Canonical references:** Keshav "How to Read a Paper"; Whitesides "How to Write a Paper"; the NeurIPS/ICML/ICLR
-author guides & checklists; the ML Reproducibility Challenge; Zinkevich "Rules of ML" (applied); venue ethics
-and reproducibility guidelines.
+**Canonical references:** Keshav "How to Read a Paper"; Whitesides "How to Write a Paper"; Simon Peyton Jones
+"How to write a great research paper" (talk); the **NeurIPS/ICML/ICLR 2026 author & reviewer guides, checklists,
+and LLM-use policies**; the **ML Reproducibility Challenge** (NeurIPS 2026 track via TMLR); the NeurIPS paper
+checklist & reproducibility checklist; Zinkevich "Rules of ML" (applied); Sculley et al. "Winner's Curse?"
+(empirical rigor) and "Hidden Technical Debt in ML Systems"; venue ethics and broader-impact guidelines.

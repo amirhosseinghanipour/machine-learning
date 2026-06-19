@@ -39,18 +39,58 @@ everywhere — this file adds what's *specific* to each field. Current to 2026.
 
 ## 3. Speech & Audio
 
-- **ASR (speech-to-text):** Whisper-class encoder-decoder and self-supervised (wav2vec 2.0/HuBERT) encoders;
-  Conformer (conv+attention) and increasingly SSM/Mamba-based models for long audio. Metric: **WER/CER** (and be
-  careful with normalization/text-normalization, which can swing WER).
-- **TTS / audio generation:** neural codec + autoregressive or diffusion/flow-matching synthesis (very strong,
-  near-human); voice cloning raises consent/deepfake concerns. Metrics: MOS (human), intelligibility via ASR-WER,
-  speaker similarity, FAD.
-- **Other:** speaker ID/diarization, keyword spotting, music/audio tagging, source separation, sound event
-  detection.
-- **Gotchas:** features (log-mel spectrograms) and SpecAugment; **speaker leakage** (same speaker across
-  train/test inflates results — split by speaker); variable-length batching/padding; sample-rate and codec
-  consistency; noise/reverb robustness; far-field vs. close-talk mismatch. Evaluate on realistic acoustic
-  conditions.
+The fastest-moving applied area in 2026: the field has reorganized around **discrete audio tokens + (codec)
+language models** and **SSL encoders**, with **flow matching** now the default for high-fidelity synthesis.
+
+- **ASR (speech-to-text):** the landscape has moved past Whisper. **Whisper large-v3 / turbo** is still the
+  robust multilingual default and a fine baseline, but on the **Open ASR Leaderboard** it is no longer SOTA:
+  **NVIDIA Canary-Qwen** (a Speech-Augmented LM = FastConformer encoder + frozen LLM decoder) leads English
+  WER (~5.6%) trained on an order of magnitude less data, with **Parakeet-TDT** (CTC/TDT decoder) the
+  speed/throughput champion (RTFx in the thousands) at slightly higher WER; **IBM Granite Speech** and
+  **Qwen3-ASR** are also sub-Whisper on English. Architecture rule of thumb: **Conformer/FastConformer encoder
+  + attention decoder** = best accuracy but slow; **CTC/TDT decoders** = far faster, slightly worse, streamable.
+  Backbones often start from SSL encoders (wav2vec 2.0 / HuBERT / **WavLM** — WavLM is the strongest general
+  speech encoder, **w2v-BERT 2.0** for massively multilingual). Metric: **WER/CER**, but **text normalization
+  dominates** — whisper-normalizer vs. NeMo vs. raw can swing WER by points; **fix and report the normalizer**,
+  and for long-form report a segmentation-robust metric. Watch **hallucinated transcripts on silence/noise**
+  (a known Whisper failure) and **language-confusion** in multilingual decoding.
+- **Self-supervised audio (the encoders to know):** wav2vec 2.0/HuBERT (contrastive/masked-prediction),
+  **WavLM** (adds denoising/overlap modeling — best for speaker/diarization tasks), **BEATs**/**EAT** (general
+  audio events), **Whisper encoder** as a strong supervised feature extractor. Benchmark frozen features on
+  **SUPERB / SUPERB-SG**. Default: don't train an audio model from scratch — probe or fine-tune one of these.
+- **Neural audio codecs & tokens (the substrate for everything generative):** **RVQ** codecs **SoundStream →
+  EnCodec → DAC** (Descript, best reconstruction/codebook use) produce *acoustic* tokens; **Mimi** (Kyutai,
+  streaming, **semantic-distilled RVQ-1** from an SSL teacher) and **SpeechTokenizer/X-Codec(2)/WavTokenizer/
+  DualCodec** add **semantic–acoustic disentanglement** and **low frame rates** (12.5–25 Hz, even single
+  codebook) so an LM can model speech cheaply. Key axes when choosing a codec: **frame rate, #codebooks,
+  semantic vs. acoustic content, streaming capability, reconstruction (SI-SDR / ViSQOL / mel-distance)**.
+- **TTS / audio generation (near-human, two dominant paradigms):**
+  - **Codec/neural LMs:** **VALL-E(2)**-style — autoregressive over codec tokens, zero-shot voice cloning from a
+    short prompt; descendants and open systems (**XTTS, Fish-Speech, CosyVoice/CosyVoice2, Kokoro** for
+    lightweight) are production-grade.
+  - **Flow-matching / diffusion, non-autoregressive:** **F5-TTS** (DiT + conditional flow matching, no
+    duration model, fast and high-quality), **E2/Voicebox/Matcha-TTS**, **NaturalSpeech 3** — now the
+    quality/controllability frontier; flow matching also powers many codec vocoders.
+  - **Full-duplex / spoken dialogue:** **Moshi** (Kyutai) and speech-LLM stacks integrate ASR+TTS+LM for
+    real-time conversation. Voice cloning raises **consent/deepfake** concerns — watermark, gate, and red-team
+    (codec-synthesized-speech deepfake detection is its own benchmark). Metrics: **MOS / CMOS** (human, the gold
+    standard) plus **UTMOS/DNSMOS** (predicted MOS — convenient but gameable), intelligibility via **ASR-WER**,
+    **speaker-similarity (SIM)** via a verification embedding, **FAD** (choose the embedding deliberately — VGGish
+    is dated; CLAP/PANN-based FAD is more reliable).
+- **Other tasks:** **speaker diarization** — end-to-end neural (**NVIDIA Sortformer/Sortformer-v2** streaming,
+  EEND) now rivals/beats the classic **pyannote 3.1** clustering pipeline; hybrids (DiariZen = WavLM embeddings +
+  pyannote clustering) are strong. Metric **DER** (with collar + overlap handling stated). Also speaker
+  verification (EER/minDCF), keyword spotting, music/audio tagging, **source separation** (SI-SDRi; SepFormer/
+  TF-GridNet), sound event detection. **Audio-text / understanding:** CLAP embeddings; audio-LLMs (Qwen2-Audio,
+  SALMONN, Audio Flamingo) for captioning/QA.
+- **Gotchas (speech-specific, high-yield):** features are **log-mel spectrograms** (state n_fft/hop/n_mels and
+  keep them identical train↔infer) + **SpecAugment**; **speaker leakage is the #1 trap** — the *same speaker*
+  (or recording session/channel) across train/test inflates everything → **split by speaker, and ideally by
+  session/device**; **variable-length batching** (bucket by length; pad and **mask** so padding doesn't enter
+  the loss/attention); **sample-rate and codec consistency** (resample to a single rate; MP3/Opus artifacts
+  differ from the training distribution); **noise/reverb robustness** and **far-field vs. close-talk** mismatch;
+  **channel/microphone bias** as a confound; for generative models, **prosody/duration** evaluation needs more
+  than WER. Evaluate on realistic acoustic conditions, not just clean read speech (LibriSpeech-clean flatters).
 
 ## 4. Time Series & Forecasting
 
@@ -58,12 +98,21 @@ everywhere — this file adds what's *specific* to each field. Current to 2026.
   season), exponential smoothing (ETS), ARIMA, **and gradient-boosted trees on lag/calendar features (often the
   practical winner)**. Always beat these before claiming a deep model helps — many "deep forecasting beats
   classical" claims fail under honest baselines (the M-competitions are sobering).
-- **Deep/Modern:** DeepAR (probabilistic RNN), N-BEATS/N-HiTS, Temporal Fusion Transformer, and **time-series
-  foundation models** (TimesFM, Chronos, Moirai — pretrained, strong zero-shot forecasting, a 2024–2026
-  development). SSM/Mamba models suit long sequences.
+- **Deep/Modern:** DeepAR (probabilistic RNN), N-BEATS/N-HiTS, **PatchTST** (patching + channel-independence —
+  a strong, simple transformer baseline), and **time-series foundation models** (pretrained, zero-shot):
+  **Chronos/Chronos-2** (tokenize-and-quantize, T5-style; Chronos-2 adds multivariate/covariate support),
+  **TimesFM(-2.5)** (decoder-only, patched), **Moirai/Moirai-MoE** (any-variate attention + MoE),
+  **MOMENT, Time-MoE**, and even **TabPFN-TS** (tabular in-context model, surprisingly strong zero-shot). They
+  are genuinely useful for **cold-start/zero-shot** but **a tuned local model or GBM on lags often still wins**
+  when you have history — benchmark, don't assume. A sobering result: on broad benchmarks several TSFMs still
+  fail to beat **AutoETS/AutoTheta** at some frequencies. SSM/Mamba models suit very long sequences.
 - **Evaluation:** **strictly temporal splits** + rolling-origin/backtesting CV — a random split leaks the future
-  and is the #1 time-series error. Metrics: MAE/RMSE, MASE (scale-free, vs. naive), sMAPE, **pinball/quantile
-  loss** for probabilistic forecasts (forecast *distributions*, not just points). Report at the relevant horizon.
+  and is the #1 time-series error. **Beware TSFM contamination** — public benchmarks (ETT, traffic, M-series)
+  may be in the pretraining corpus, so "zero-shot" wins can be recall; prefer fresh/private series or the
+  contamination-aware **GIFT-Eval**. Metrics: MAE/RMSE, **MASE** (scale-free, vs. naive — the M-competition
+  standard), sMAPE, **pinball/quantile loss + CRPS / coverage** for probabilistic forecasts (forecast
+  *distributions* and check calibration, not just points). Report at the relevant horizon and reconcile
+  hierarchies.
 - **Gotchas:** non-stationarity/drift; look-ahead bias in features (any feature using future info); leakage via
   global normalization across the time boundary; hierarchical/coherent forecasts (reconciliation); irregular
   sampling and missing timestamps; **don't shuffle**.
@@ -113,12 +162,21 @@ everywhere — this file adds what's *specific* to each field. Current to 2026.
 
 ## 8. Scientific ML (AI for Science)
 
-- **Where ML is transforming science:** protein structure/design (AlphaFold-class, equivariant — see
-  [graph-geometric.md](graph-geometric.md)), molecular property prediction & generation (flow matching/diffusion
-  over molecules, see [generative-models.md](generative-models.md)), **ML interatomic potentials / universal
-  force fields** (NequIP/MACE-class, near-DFT accuracy at MD speed), weather/climate (GraphCast/neural weather
-  models now competitive with numerical NWP), **physics-informed and operator learning** (PINNs, Fourier/DeepO
-  neural operators for PDEs), and ML-accelerated simulation/discovery.
+- **Where ML is transforming science:** protein/biomolecular structure (**AlphaFold 3** and open re-impls like
+  **Boltz-1/2, Chai-1** — a **diffusion** head over a Pairformer, predicting *complexes* with ligands/nucleic
+  acids/ions, not just single chains; equivariant priors — see [graph-geometric.md](graph-geometric.md)),
+  protein/molecule **design** (RFdiffusion, ESM-class protein LMs), molecular property prediction & generation
+  (flow matching/diffusion over molecules, see [generative-models.md](generative-models.md)), **ML interatomic
+  potentials / universal force fields** — now **foundation models**: **MACE-MP-0/MACE-MH-1, MatterSim, ORB,
+  SevenNet, CHGNet, eqV2/Fairchem**, near-DFT accuracy at MD speed and broad chemistry coverage (paired with
+  large DFT corpora like the Materials Project / OMat24; **GNoME** for materials discovery). Weather/climate
+  (**GraphCast, GenCast (diffusion ensembles), Aurora, FourCastNet**) now competitive with or beating numerical
+  NWP at a fraction of the cost. **Physics-informed and operator learning** — **PINNs** (great for inverse
+  problems/PDE-constrained fitting, but notoriously hard to optimize: stiff multi-objective loss balancing,
+  spectral bias, use curriculum/causal weighting/PirateNets) and **neural operators** (**FNO**, DeepONet,
+  and graph/transformer operators) that learn *mappings between function spaces* and generalize across
+  resolutions/discretizations. Plus ML-accelerated simulation, surrogate modeling, and autonomous experiment
+  loops.
 - **Domain-specific rigor (stricter than typical ML):** physical constraints and symmetries belong in the
   architecture (equivariance, conservation laws); **out-of-distribution generalization is the whole point**
   (predicting *novel* molecules/materials) → use scaffold/structural/temporal splits, not random (random splits
@@ -133,7 +191,7 @@ everywhere — this file adds what's *specific* to each field. Current to 2026.
 |---|---|---|
 | Vision | Pretrained backbone (DINOv2/ViT/ConvNeXt) + fine-tune/probe | Shortcut learning; label-preserving augmentation |
 | NLP | LLM (prompt/LoRA/RAG); GBM/encoder baseline for narrow tasks | Contamination; tokenization; per-language eval |
-| Speech/Audio | Whisper/wav2vec2 + fine-tune | Speaker leakage (split by speaker); acoustic realism |
+| Speech/Audio | ASR: Whisper/Canary or WavLM-probe; TTS: F5-TTS or codec-LM | Speaker/session leakage (split by speaker); normalizer-defined WER; acoustic realism |
 | Time series | Seasonal-naive + GBM on lags; foundation model for zero-shot | Temporal split + backtesting; look-ahead bias |
 | Tabular | LightGBM/XGBoost/CatBoost (+ AutoGluon) | Leakage audit; categorical encoding in-fold |
 | Recommenders | Two-tower retrieve + rank | Temporal split; A/B test; exposure bias |
@@ -141,6 +199,8 @@ everywhere — this file adds what's *specific* to each field. Current to 2026.
 | Scientific ML | Equivariant/operator model with physics priors | Scaffold/structural split; UQ; respect physics |
 
 **Canonical references (entry points):** ImageNet/ConvNeXt/ViT/DINOv2/SAM (vision); the LLM canon in
-[transformers-llms.md](transformers-llms.md) (NLP); Whisper, wav2vec 2.0 (speech); Makridakis M4/M5 competitions
-& Chronos/TimesFM (forecasting); Grinsztajn et al. 2022 (tabular); two-tower/DLRM & off-policy evaluation
-(recsys); Qwen-VL/SigLIP (multimodal); AlphaFold, NequIP/MACE, GraphCast, Fourier Neural Operator (sci-ML).
+[transformers-llms.md](transformers-llms.md) (NLP); Whisper, wav2vec 2.0/HuBERT/WavLM, EnCodec/DAC/Mimi,
+VALL-E 2, F5-TTS, Open ASR Leaderboard, SUPERB (speech/audio); Makridakis M4/M5 competitions, Chronos/TimesFM/
+Moirai & GIFT-Eval (forecasting); Grinsztajn et al. 2022 / TabPFN (tabular); two-tower/DLRM & off-policy
+evaluation (recsys); Qwen-VL/SigLIP, MMMU (multimodal); AlphaFold 3/Boltz, NequIP/MACE & MACE-MP, GraphCast/
+GenCast, Fourier Neural Operator/DeepONet (sci-ML).

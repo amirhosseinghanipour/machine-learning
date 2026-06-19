@@ -24,22 +24,36 @@ the single most common cause of results that don't replicate (see the Prime Dire
 - **Sources & coverage:** ensure the data spans the conditions, subgroups, and edge cases of deployment. Missing
   slices = silent failure on those slices (see worst-group evaluation in
   [evaluation-statistics.md](evaluation-statistics.md)).
-- **Pretraining-scale curation** (for foundation models): aggressive **quality filtering** (classifier-based,
-  heuristic, perplexity), **deduplication** (exact + near-dup via MinHash/SimHash), toxicity/PII filtering,
-  language ID, and **decontamination** against eval benchmarks. Data quality and dedup dominate downstream
-  quality — more than a marginally better architecture.
-- **Document the data** with a **datasheet** (Gebru et al.): provenance, collection process, intended use,
-  composition, preprocessing, licensing/consent, and known biases. Required for responsible release and for
-  reviewers (see [research-workflow.md](research-workflow.md)).
+- **Pretraining-scale curation** (for foundation models): the pipeline that actually moves the needle is, in
+  rough order, language ID → quality filtering → **dedup** → decontamination → toxicity/PII removal → mixing.
+  Quality filtering combines cheap heuristics (Gopher/C4 rules: length, symbol/word ratios, boilerplate, bullet
+  fraction) with **model-based** scoring (fastText/classifier "is this like high-quality reference text," or
+  perplexity vs. a reference LM); FineWeb-Edu showed an education classifier filter beats raw web by a wide
+  margin at equal tokens. Data quality and dedup dominate downstream quality — more than a marginally better
+  architecture. But filtering is **selection**: an over-aggressive quality classifier bakes in the reference
+  corpus's demographic/topic bias — audit what gets dropped.
+- **Document the data** with a **datasheet** (Gebru et al.) and/or **data card**: provenance, collection process
+  and dates, intended use, composition, preprocessing, licensing/consent, and known biases. Emit **machine-
+  readable metadata** — the **Croissant** format (MLCommons 2024; supported by Hugging Face, Kaggle, OpenML,
+  Google Dataset Search; **Croissant-RAI** extends it with responsible-AI fields) makes a dataset loadable and
+  discoverable across tools, not just human-documented. Required for responsible release and for reviewers (see
+  [research-workflow.md](research-workflow.md)).
 
 ## 3. Labeling & label quality
 
-- **Label noise is everywhere** (popular benchmarks have %-level error rates). It caps achievable accuracy and
-  corrupts evaluation. Estimate it (relabel a sample, confident-learning/Cleanlab to find likely errors) and
-  clean the **test set** especially — a noisy test set hides real progress.
-- **Annotation protocol:** clear guidelines, multiple annotators on a subset, measure **inter-annotator
-  agreement** (Cohen's/Fleiss' κ); low agreement means the task is ill-defined — fix the definition before
-  scaling labeling. Adjudicate disagreements.
+- **Label noise is everywhere** (Northcutt et al. 2021 found %-level error rates across ImageNet, CIFAR, MNIST,
+  QuickDraw, and several NLP benchmarks; correcting test labels even **reorders model rankings**). It caps
+  achievable accuracy and corrupts evaluation. Estimate it (relabel a sample; **confident learning** / Cleanlab
+  to flag likely errors via the joint distribution of noisy and predicted labels) and clean the **test set**
+  especially — a noisy test set hides real progress and can crown the wrong model. Distinguish *random* noise
+  (caps accuracy, roughly symmetric) from *systematic* mislabeling (biases the model and is far more dangerous).
+- **Annotation protocol:** clear guidelines with examples and edge cases, a calibration round, multiple
+  annotators on an overlap subset, and measured **inter-annotator agreement** — use **Cohen's/Fleiss' κ** (or
+  Krippendorff's α for missing data / ordinal labels), *not* raw percent agreement, which ignores chance. Low
+  agreement means the **task is ill-defined** — fix the label definition before scaling labeling (more
+  annotators won't rescue an ambiguous taxonomy). Adjudicate disagreements; treat the adjudicated/consensus set
+  as a higher-quality eval. Watch for annotator-identity confounds (one annotator labels one class) which become
+  leakage.
 - **Weak/programmatic supervision** (Snorkel-style labeling functions), active learning (label the most
   informative examples — uses epistemic uncertainty, see [probabilistic-ml.md](probabilistic-ml.md)), and
   semi-supervised learning stretch limited labels — see [learning-paradigms.md](learning-paradigms.md) for the
@@ -70,8 +84,19 @@ look great and deployment collapse. Forms:
 
 The split must mirror deployment — covered in depth in [evaluation-statistics.md](evaluation-statistics.md) §2.
 The data-side rules:
-- **Deduplicate and decontaminate FIRST**, then split. Near-duplicate detection (hashing/embeddings) before any
-  split.
+- **Deduplicate and decontaminate FIRST**, then split. Near-duplicate detection before any split:
+  - **Exact dup:** hash the normalized content (e.g. SHA-1 of whitespace/case-normalized text) and drop repeats.
+  - **Near-dup (text):** **MinHash + LSH** — shingle each doc into k-grams (word 5-grams typical), compute a
+    MinHash signature (N permutations) estimating Jaccard similarity, then LSH-band the signatures so only
+    candidate pairs above a similarity threshold (commonly ~0.7–0.8 Jaccard) are compared. SimHash is the cheaper
+    Hamming-distance alternative. This is what dedups web-scale corpora (Lee et al. 2021 showed dedup reduces
+    memorization and *improves* LMs at equal compute). For decontamination against benchmarks, also do **n-gram
+    / substring** matching (e.g. 8–13-gram or 50-char overlap) — and at scale, an **Infini-gram / suffix-array**
+    index over the training corpus lets you query benchmark items exactly.
+  - **Near-dup (images/embeddings):** perceptual hashing or embedding cosine-similarity with an ANN index (FAISS)
+    above a threshold.
+  - Near-exact matching misses paraphrase/translation contamination — supplement with embedding similarity or a
+    rephrase test (see [evaluation-statistics.md](evaluation-statistics.md) §8).
 - **Choose the unit:** group/temporal/stratified/scaffold as the problem demands — match the unit of
   generalization.
 - **Freeze the test set** immediately and store it separately; resist the urge to "just check."
@@ -85,11 +110,15 @@ The data-side rules:
 - **Levers, in order:** class weights / `scale_pos_weight` / focal loss (cheap, keeps data real); threshold
   tuning on the PR curve (often the biggest, freest win); **then** resampling if needed.
 - **Resampling caveats:** random oversampling overfits the minority; **SMOTE** interpolates synthetic minority
-  points (can create unrealistic ones, especially in high-dim / mixed types — validate); undersampling discards
+  points (can create unrealistic ones / blur the boundary, especially in high-dim or mixed categorical-numeric
+  data — validate, and apply it inside the pipeline so it can't fit on held-out folds); undersampling discards
   data. **Resample only the training folds, never validation/test** (resampling the test set fabricates the
-  metric).
-- **Calibration breaks under resampling** — recalibrate, or adjust the threshold/priors back to the true base
-  rate.
+  metric and is a common, invalidating bug) — and SMOTE *before* the split is leakage (synthetic points
+  interpolate across the split boundary). Recent evidence: with a well-calibrated model and a tuned threshold,
+  resampling often gives little over class weights — try the cheap levers first.
+- **Calibration breaks under resampling** — you changed the base rate, so the model's probabilities no longer
+  match deployment. Recalibrate on a natural-prevalence set, or apply a prior-correction / adjust the threshold
+  back to the true base rate (see [evaluation-statistics.md](evaluation-statistics.md) §7).
 
 ## 7. Data augmentation (the highest-leverage regularizer)
 
@@ -114,10 +143,38 @@ worth more than any architecture tweak — but only the augmentations that prese
 - **The gap:** synthetic data has a distribution gap from reality (sim-to-real gap); domain randomization and
   domain adaptation help bridge it. **Validate on real held-out data** — never let synthetic data into the test
   set.
-- **Model-generated-data risks:** training on a model's own outputs can cause **model collapse** (degenerate
-  distributions over generations) and bias amplification. Mix with real data and monitor diversity.
+- **Model-generated-data risks:** training recursively on a model's own outputs causes **model collapse**
+  (Shumailov et al. 2024) — variance shrinks, tails (rare events) vanish, distributions drift to the mean over
+  generations, and bias amplifies. The mitigation is to **accumulate** real data alongside synthetic rather than
+  *replace* it (collapse is largely driven by replacing the real distribution), keep a fixed real anchor, and
+  monitor output diversity/entropy. Synthetic data works best when the generator can do something the trainee
+  can't yet (distillation, verified solutions, harder-to-generate-than-verify tasks), not as a free data
+  multiplier.
 - **Privacy:** synthetic data is not automatically private — generators can memorize and leak training examples
   (see [interpretability-safety.md](interpretability-safety.md)); use DP generation if privacy is the goal.
+
+## 8a. Data and the compute budget (scaling-law considerations)
+
+When data is a planned quantity (foundation models, large training runs), treat it as a budgeted resource:
+- **Compute-optimal allocation.** Chinchilla (Hoffmann et al. 2022): for dense LLMs the compute-optimal split is
+  roughly **~20 tokens per parameter** — most pre-Chinchilla models were badly *undertrained* (too big, too
+  little data). Plan in tokens/FLOPs, not epochs (see [transformers-llms.md](transformers-llms.md)). Inference
+  cost shifts the optimum: if you'll serve the model a lot, train a *smaller* model on *more* data than
+  compute-optimal.
+- **Data-constrained regime.** When unique data runs out (Muennighoff et al. 2023): **repeating data up to ~4
+  epochs is nearly as good as fresh unique data**; beyond that the value of repeated tokens decays fast and
+  added compute eventually contributes ~nothing. So when tokens are the bottleneck, modest repetition + adding
+  parameters beats hammering the same data — and repeating *intelligently selected* data can beat fresh random
+  data. Account for this with an "effective tokens" discount, not raw token counts.
+- **Dedup interacts with scaling.** Train/test n-gram overlap and intra-corpus duplication distort scaling-law
+  fits and inflate apparent performance (memorization), and heavy duplication can *break* a clean scaling trend
+  above ~100M params. Deduplicate before measuring scaling.
+- **Quality > quantity at the margin.** A better data filter shifts the whole loss-vs-compute curve down — often
+  a larger lever than more tokens. But filtering reduces the unique-token budget, pushing you sooner into the
+  repetition regime; co-design filter strength and epoch count.
+- **Mixture weights matter.** Domain mixing proportions (code/web/books/math) materially change downstream skills
+  and have their own (per-domain) scaling behavior; tune the mixture, and note that the optimal mixture can shift
+  with scale.
 
 ## 9. Preprocessing & feature pipelines
 
@@ -134,15 +191,25 @@ worth more than any architecture tweak — but only the augmentations that prese
 ## 10. Data checklist
 
 - [ ] Read 50–100 raw examples; profiled distributions, missingness, and label balance.
-- [ ] Deduplicated and decontaminated **before** splitting; split by the correct unit; test set frozen & recorded.
+- [ ] Deduplicated (exact + MinHash/LSH near-dup) and decontaminated **before** splitting; split by the correct
+      unit; test set frozen & recorded (IDs or seeded procedure).
 - [ ] Audited every feature for target/temporal/group leakage ("knowable at prediction time?").
-- [ ] Preprocessing/encoders fit on train only, inside CV folds (pipeline-enforced).
-- [ ] Label noise estimated; test labels cleaned; annotation agreement measured.
-- [ ] Imbalance handled with the right metric + weighting/threshold (resampling only on train).
+- [ ] Preprocessing/encoders (incl. SMOTE) fit on train only, inside CV folds (pipeline-enforced).
+- [ ] Label noise estimated (confident learning); test labels cleaned; annotation agreement measured (κ/α, not
+      raw %).
+- [ ] Imbalance handled with the right metric + weighting/threshold (resampling only on train); recalibrated if
+      resampled.
 - [ ] Augmentations are label-preserving and match deployment nuisance variation.
-- [ ] Synthetic data validated against real held-out data; never in the test set.
-- [ ] Datasheet / provenance / licensing / bias documented.
+- [ ] Synthetic data validated against real held-out data, never in the test set; accumulate-not-replace to
+      avoid collapse.
+- [ ] For budgeted runs: token/param allocation planned (Chinchilla), repetition kept ≲4 epochs, dedup done
+      before measuring scaling.
+- [ ] Datasheet / data card / Croissant metadata, provenance, licensing, and bias documented.
 
-**Canonical references:** Gebru et al. 2018 (Datasheets for Datasets); Kapoor & Narayanan 2023 (leakage &
-reproducibility crisis); Northcutt et al. 2021 (label errors in test sets / confident learning); Chawla et al.
-2002 (SMOTE); Lee et al. 2021 (deduplicating training data improves LMs); Shumailov et al. 2024 (model collapse).
+**Canonical references:** Gebru et al. 2018 (Datasheets for Datasets); Pushkarna et al. 2022 (Data Cards);
+MLCommons 2024 (Croissant metadata format); Kapoor & Narayanan 2023 (leakage & reproducibility crisis);
+Northcutt et al. 2021 (label errors in test sets / confident learning); Chawla et al. 2002 (SMOTE); Broder 1997
+(MinHash); Lee et al. 2021 (deduplicating training data improves LMs); Penedo et al. 2024 (FineWeb/-Edu data
+filtering); Hoffmann et al. 2022 (Chinchilla compute-optimal scaling); Muennighoff et al. 2023 (scaling
+data-constrained LMs / repeated epochs); Shumailov et al. 2024 (model collapse); Gemstones/Sorscher et al. 2022
+(data-pruning beats neural scaling laws).

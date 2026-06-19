@@ -168,10 +168,13 @@ or pre-register the change.
 - **Evaluation.** Contamination-aware, frequently-refreshed benchmarks (LiveBench, LiveCodeBench,
   MMLU-Pro, FrontierMath) for LLMs; task-appropriate harnesses elsewhere. Trust held-out and dynamic
   benchmarks over static leaderboards.
-- **What's current.** Hybrid attention+SSM (Mamba-2) and MoE architectures; flow matching as the
-  default continuous-generative objective (diffusion is a special case under Generator Matching);
-  post-training as SFT → preference optimization (DPO/SimPO/KTO) → RL with verifiable rewards
-  (GRPO/DAPO/RLVR); sparse-autoencoder mechanistic interpretability. Details in the references.
+- **What's current.** Hybrid attention+SSM (Mamba-2) and MoE architectures with auxiliary-loss-free
+  load balancing; multi-head latent attention (MLA) and FP8 training/KV-cache for efficiency; flow
+  matching as the default continuous-generative objective (diffusion is a special case under Generator
+  Matching); post-training as SFT → preference optimization (DPO/SimPO/KTO) → RL with verifiable rewards
+  (GRPO/DAPO/RLVR), plus speculative decoding for inference; matrix-aware optimizers (Muon/SOAP) and
+  μP/μTransfer for HP transfer; DINOv3/SigLIP 2 as default vision backbones; sparse-autoencoder and
+  transcoder mechanistic interpretability. Details in the references.
 
 Always confirm versions/APIs against the installed environment and current docs before writing code —
 this field moves monthly.
@@ -238,21 +241,22 @@ several when a task spans them (e.g., "train and evaluate a diffusion model at s
 
 | When the task is about… | Load |
 |---|---|
-| Math, optimization theory, learning theory, information theory, why methods work | [references/foundations.md](references/foundations.md) |
-| Linear/logistic models, SVMs/kernels, trees & GBMs, clustering, PCA/UMAP, tabular, feature engineering, calibration | [references/classical-ml.md](references/classical-ml.md) |
+| Math, optimization theory, learning theory, information theory, why methods work; double descent / benign overfitting, edge of stability, NTK / μP, implicit regularization | [references/foundations.md](references/foundations.md) |
+| Linear/logistic models, SVMs/kernels, trees & GBMs, clustering, PCA/UMAP, tabular, feature engineering, calibration, conformal prediction, tabular foundation models (TabPFN) | [references/classical-ml.md](references/classical-ml.md) |
 | MLP/CNN/RNN architecture, normalization/init/activation, optimizers & schedules, regularization, training/debugging deep nets | [references/deep-learning.md](references/deep-learning.md) |
-| Attention/transformers, positional encodings, tokenization, LLM pretraining & scaling laws, post-training (SFT/DPO/GRPO/RLVR), MoE, long context, efficient attention, inference, RAG/agents, SSMs/Mamba | [references/transformers-llms.md](references/transformers-llms.md) |
+| Attention/transformers (MQA/GQA/MLA), positional encodings (RoPE/YaRN), tokenization, LLM pretraining & scaling laws, post-training (SFT/DPO/GRPO/RLVR), MoE (auxiliary-loss-free balancing), long context, efficient attention, inference (KV-cache/speculative decoding), SSMs/Mamba | [references/transformers-llms.md](references/transformers-llms.md) |
+| Building on top of LLMs: prompting & in-context learning, RAG (retrieval/reranking/eval), tool-use & multi-agent systems, context engineering, MCP, agent evaluation harnesses, prompt-injection & agent security | [references/agents.md](references/agents.md) |
 | VAEs, GANs, normalizing flows, autoregressive, diffusion, flow matching, consistency models, generative evaluation (FID etc.) | [references/generative-models.md](references/generative-models.md) |
 | MDPs, value/policy-gradient methods, PPO/SAC, model-based & offline RL, exploration, multi-agent, RL for LLMs | [references/reinforcement-learning.md](references/reinforcement-learning.md) |
 | Bayesian inference, graphical models, variational inference, MCMC, Gaussian processes, Bayesian DL, uncertainty quantification, probabilistic programming | [references/probabilistic-ml.md](references/probabilistic-ml.md) |
 | GNNs, message passing, geometric deep learning, equivariance/symmetry, point clouds, molecules | [references/graph-geometric.md](references/graph-geometric.md) |
 | Self-supervised & contrastive learning, CLIP/embeddings, transfer learning, fine-tuning & PEFT/LoRA, metric learning | [references/representation-learning.md](references/representation-learning.md) |
 | Meta-learning/few-shot, multi-task, continual/lifelong, active learning, semi-/weakly-supervised, curriculum, causal ML | [references/learning-paradigms.md](references/learning-paradigms.md) |
-| Metrics, cross-validation, train/test discipline, significance testing, bootstrap/CI, benchmark design, contamination, error analysis, calibration | [references/evaluation-statistics.md](references/evaluation-statistics.md) |
+| Metrics, proper scoring rules, cross-validation, train/test discipline, significance testing, bootstrap/CI, conformal prediction, benchmark design, contamination detection, LLM-as-judge, error analysis, calibration | [references/evaluation-statistics.md](references/evaluation-statistics.md) |
 | Experiment design, ablations, config management (Hydra), seeds/determinism, tracking (W&B/MLflow), HPO, versioning, reproducibility | [references/experimentation-reproducibility.md](references/experimentation-reproducibility.md) |
 | PyTorch/JAX idioms, mixed precision, gradient checkpointing, DDP/FSDP/tensor/pipeline/3D parallelism, profiling, kernels, numerical stability, hardware | [references/engineering-scale.md](references/engineering-scale.md) |
-| Dataset construction, curation/labeling, splits & leakage, imbalance, augmentation, synthetic data, deduplication/decontamination, datasheets | [references/data.md](references/data.md) |
-| Interpretability (attribution/SHAP/probing/mechanistic/SAEs), robustness & adversarial, distribution shift/OOD, fairness, privacy/DP, alignment & safety eval | [references/interpretability-safety.md](references/interpretability-safety.md) |
+| Dataset construction, curation/labeling, splits & leakage, imbalance, augmentation, synthetic data (model collapse), deduplication/decontamination (MinHash/LSH), scaling-law data budgets, datasheets/data cards | [references/data.md](references/data.md) |
+| Interpretability (attribution/SHAP/probing/mechanistic/SAEs/transcoders), robustness & adversarial, distribution shift/OOD, fairness, privacy/DP, alignment, agentic & frontier safety eval | [references/interpretability-safety.md](references/interpretability-safety.md) |
 | Literature search, reading/reproducing papers, ideation & positioning, paper writing, figures, reviewing, rebuttals, ethics/broader impact | [references/research-workflow.md](references/research-workflow.md) |
 | Domain specifics & SOTA: computer vision, NLP, speech/audio, time series/forecasting, tabular, recommenders, multimodal/VLM, scientific ML | [references/domains.md](references/domains.md) |
 

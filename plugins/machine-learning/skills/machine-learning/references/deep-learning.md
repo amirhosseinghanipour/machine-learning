@@ -33,24 +33,55 @@ The architecture *is* the prior — it encodes which input variations should and
   seq2seq (translation), U-Nets (encoder-decoder + skip connections) for dense prediction (segmentation) and
   as the diffusion backbone.
 
+**CNN design notes that still matter.** The ConvNeXt recipe (2022) showed a pure ConvNet matches ViTs when
+given the *training recipe*, not the architecture, of modern transformers: large 7×7 depthwise kernels,
+inverted bottleneck (expand → depthwise → project), fewer-but-wider stages, GELU, LayerNorm (not BatchNorm),
+AdamW + heavy augmentation + stochastic depth + long schedules. The lesson generalizes: when a "new
+architecture" beats an old one, first check whether the *recipe* (optimizer, augmentation, schedule length,
+regularization) was held fixed — it usually wasn't. Effective receptive field grows as $O(\sqrt{\text{depth}})$
+for stacked small kernels, so dilation/striding or a few large kernels buy global context far more cheaply
+than depth alone.
+
+**RNN renaissance.** The "RNNs are dead" claim is now partly false: linear-recurrent / SSM models (Mamba-2,
+the matrix-form S6) and **minGRU/minLSTM** (gates made input-independent so the recurrence parallelizes via a
+prefix scan) recover most of the LSTM's modeling power while training at transformer-like parallelism. They are
+the conceptual bridge to the SSMs in [transformers-llms.md](transformers-llms.md); a linear RNN with a
+data-dependent diagonal transition *is* a selective SSM.
+
 ## 2. The components that make training work
 
 - **Activations.** ReLU (default, simple, can "die" — dead units output constant 0); GELU/SiLU(Swish) (smooth,
   standard in transformers); Leaky/PReLU (avoid dead units); GLU/SwiGLU (gated, strong in transformer MLPs —
   SwiGLU is the modern default FFN). Avoid sigmoid/tanh in deep hidden layers (saturate → vanishing gradients);
-  keep them for gates/outputs.
+  keep them for gates/outputs. **SwiGLU bookkeeping:** a gated FFN has 3 weight matrices, not 2, so to hold
+  parameter count fixed against a ReLU/GELU FFN you shrink the hidden width to $\tfrac{2}{3}\times$ (the common
+  "$\tfrac{8}{3}d$" hidden size). Practical defaults: GELU/SiLU for vision and general nets; SwiGLU for
+  transformer FFNs; plain ReLU only where you want exact sparsity or maximum kernel simplicity.
 - **Normalization** (stabilizes and accelerates training by controlling activation statistics):
   - **BatchNorm** — normalizes across the batch; great for CNNs/vision; **breaks with small batches** and
     couples examples (problematic for some tasks, RL, and variable-length). Train/eval behave differently
     (running stats) — a classic bug source.
   - **LayerNorm** — normalizes per-example across features; the **transformer standard**, batch-size
-    independent. **RMSNorm** (no mean-centering) is the modern, cheaper default in LLMs.
-  - **GroupNorm** — batch-independent, good for small-batch vision/detection/segmentation.
-  - **Pre-norm vs post-norm:** pre-norm (norm inside the residual branch) is far more stable for deep
-    transformers and is now standard.
+    independent. **RMSNorm** (no mean-centering, $\mathbf{x}/\sqrt{\text{mean}(\mathbf{x}^2)+\epsilon}\cdot\gamma$)
+    is the modern, cheaper default in LLMs (Llama, Qwen, etc.) — drops the mean subtraction and bias, ~10–20%
+    cheaper, no measured quality loss. Keep the norm and its $\epsilon$ in fp32 even under bf16 (see
+    [engineering-scale.md](engineering-scale.md) §5).
+  - **GroupNorm** — batch-independent, good for small-batch vision/detection/segmentation; the diffusion U-Net
+    default.
+  - **Pre-norm vs post-norm:** pre-norm (norm inside the residual branch, $\mathbf{x}+f(\text{norm}(\mathbf{x}))$)
+    is far more stable for deep transformers and is now standard — it keeps a clean identity path so gradients
+    don't have to pass through a norm. Its cost is that the residual stream's variance grows with depth; the
+    fixes seen in current LLMs are **QK-norm** (normalize Q and K before attention — kills attention-logit
+    blowup, used in many 2024–25 models) and a **final pre-output norm**. **Post-norm** can edge out pre-norm
+    in final quality at moderate depth but needs warmup/careful init to train. Hybrids exist: **DeepNorm**
+    (scaled post-norm, trains 1000-layer transformers) and **"sandwich"/peri-norm** (norm before *and* after the
+    sublayer) are used when pushing depth.
 - **Initialization.** Match init to activation to keep variance stable across depth: **Kaiming/He** for ReLU-
-  family, **Xavier/Glorot** for tanh. Residual nets often scale/zero-init the residual branch (e.g., zero-init
-  final norm γ) so the net starts near identity. Bad init = immediate plateau or explosion.
+  family ($\text{Var}=2/n_\text{in}$), **Xavier/Glorot** for tanh ($\text{Var}=2/(n_\text{in}+n_\text{out})$).
+  Residual nets often scale/zero-init the residual branch (e.g., zero-init final norm γ, or scale the residual
+  projection by $1/\sqrt{2L}$ as in GPT-2) so the net starts near identity — a residual block initialized to
+  the identity map cannot hurt the forward pass and lets the network "grow into" depth. Bad init = immediate
+  plateau or explosion. For principled width/depth-invariant init+LR, see **μP** in §3.
 - **Regularization** (control variance — see when to use it via the bias/variance diagnosis in
   [foundations.md](foundations.md)):
   - **Weight decay** (≈ $\ell_2$; use **decoupled** AdamW) — the most reliable knob.
@@ -58,34 +89,94 @@ The architecture *is* the prior — it encodes which input variations should and
     standard in fine-tuning and attention/residual dropout in some recipes.
   - **Data augmentation** — usually the highest-leverage regularizer; it directly injects the invariances you
     want (see modality-specific augmentations in [data.md](data.md)). MixUp/CutMix, RandAugment for vision.
-  - **Label smoothing**, **stochastic depth**, **early stopping** (on validation), **EMA of weights** (a free,
-    reliable boost — keep an exponential moving average of params for evaluation).
+  - **Label smoothing** (typ. 0.1) — softens targets, improves calibration, but *can hurt* knowledge
+    distillation (it erases the inter-class similarity structure the teacher provides); skip it when you'll
+    distill from the model.
+  - **Stochastic depth / DropPath** — randomly drop whole residual branches in training (rate ramped with
+    depth); the key regularizer that makes very deep vision transformers/ConvNeXt train well.
+  - **Early stopping** (on validation), **EMA of weights** (a free, reliable boost — keep an exponential moving
+    average of params for evaluation; decay ~0.999–0.9999, the de-facto standard for diffusion and many vision
+    models). EMA also smooths the noise that a constant-LR / WSD-stable phase leaves behind.
   - **Spectral/gradient penalties** for stability (GANs, certified robustness).
+  - **A note on the modern regime:** in large-scale pretraining the dataset is effectively seen ~once, so the
+    classical overfitting these tools fight barely occurs — weight decay (often acting more as an optimization/
+    conditioning knob than a true prior) and a touch of dropout in fine-tuning are usually all that's used.
+    Match the regularizer to the regime (underparameterized vs interpolating — see
+    [foundations.md](foundations.md)); aggressive dropout on a one-epoch LLM run just wastes capacity.
 
 ## 3. Optimizers, learning rates, and schedules (the recipe)
 
 (Theory in [foundations.md](foundations.md) §4; this is the practitioner's recipe.)
 
 - **Optimizer:** **AdamW** is the default for transformers and most deep nets ($\beta_1{=}0.9$, $\beta_2{=}0.95$
-  for LLMs / $0.999$ otherwise, decoupled weight decay ~0.1 for LLMs). **SGD+momentum** still edges out Adam on
-  some vision CNNs and can generalize slightly better — try it for ConvNets. **Lion**, **Adafactor**
-  (memory-efficient, used for large models), **Shampoo/SOAP** (approximate second-order, increasingly used at
-  scale) are worth knowing. Don't hand-roll an optimizer unless you must.
+  for LLMs / $0.999$ otherwise, $\epsilon{=}10^{-8}$, decoupled weight decay ~0.1 for LLMs). *Decoupled* matters:
+  AdamW applies $\theta \leftarrow \theta - \eta\lambda\theta$ separately from the adaptive step, so weight
+  decay is true $\ell_2$ shrinkage independent of the gradient scale — plain "Adam + L2 in the loss" is *not*
+  equivalent and underperforms. Note the AdamW decay is coupled to LR; the effective shrinkage per step is
+  $\eta\lambda$, so re-tune $\lambda$ if you change the schedule peak. **SGD+momentum** still edges out Adam on
+  some vision CNNs and can generalize slightly better — try it for ConvNets. Optimizers worth knowing in 2026:
+  - **Lion** (sign-based, $\text{sign}(\beta_1 m + (1{-}\beta_1)g)$) — half Adam's optimizer memory (one state
+    not two), competitive on large-batch vision/LM; needs ~3–10× *smaller* LR and *larger* weight decay than
+    AdamW because the update magnitude is fixed at $\pm1$ per coordinate.
+  - **Adafactor** — factorizes the second-moment matrix into row/column statistics → near-zero optimizer memory;
+    the historical large-model choice (T5, PaLM) when optimizer state didn't fit. Slightly worse than Adam
+    per-step; pairs with relative-step LR.
+  - **Shampoo / SOAP** — approximate full-matrix (Kronecker-factored) preconditioning. SOAP (Vyas et al.,
+    ICLR 2025) = "run Adam in the eigenbasis of Shampoo's preconditioner"; it adds only one extra
+    hyperparameter (preconditioning-update frequency) and in the large-batch regime cuts steps ~40% and
+    wall-clock ~35% vs AdamW. Distributed Shampoo is in production at scale; the cost is the periodic
+    eigendecomposition and extra state.
+  - **Muon** (Jordan 2024; scaled to trillion-param **Kimi K2** as **MuonClip**) — for **2D weight matrices
+    only**: take SGD-momentum, then **orthogonalize the update** via a few (≈5) Newton–Schulz iterations
+    (a quintic polynomial run in bf16) so the applied update is approximately the polar factor (semi-orthogonal).
+    Intuition: it equalizes the update's singular values, taking a large step in *every* direction rather than
+    collapsing onto the dominant one. Empirically ~1.3–2× more token-efficient than AdamW at fixed compute.
+    Practical wiring: **Muon on hidden matmul weights, AdamW on embeddings, the LM head, norms, and all 1-D
+    params**; scale Muon's per-matrix LR so its update RMS matches AdamW's; add weight decay. At scale it needs
+    stabilization (Kimi's **QK-Clip** to bound attention logits) — MuonClip reportedly eliminated loss spikes
+    across a trillion-token run. This is the most significant optimizer shift of 2024–25; reach for it on a
+    pretraining run where AdamW is the incumbent.
+  - **Schedule-free** (Defazio et al. 2024, won the 2024 AlgoPerf self-tuning track) — folds Polyak/Primal
+    averaging into the optimizer so you need **no LR decay schedule and no preset run length**; strong at small/
+    medium batch but tends to fall behind WSD/cosine at very large batch. Useful when total steps are unknown
+    (continual / open-ended training).
+
+  Don't hand-roll an optimizer unless you must; do swap AdamW→Muon/SOAP when a pretraining budget justifies the
+  validation.
 - **Learning rate is the single most important hyperparameter.** Find it with an **LR-range test** (sweep LR
-  up, watch loss). Too high → diverge/NaN; too low → crawl. Typical AdamW LRs: 1e-3 to 3e-4 (from scratch),
-  1e-5 to 5e-5 (fine-tuning large models).
-- **Schedule:** **linear warmup** (critical for transformers/Adam — a few hundred to a few thousand steps)
-  then **cosine decay** (or linear decay, or WSD: warmup-stable-decay for flexible run lengths). Warmup
-  prevents early instability when Adam's variance estimates are noisy.
-- **Batch size:** larger = more stable, more parallel, but with diminishing returns past a "critical batch
-  size." Scale LR roughly linearly with batch size (with warmup). Use **gradient accumulation** to simulate
-  large batches on limited memory.
+  up, watch loss). Too high → diverge/NaN; too low → crawl. Typical AdamW LRs: 1e-3 to 3e-4 (from scratch,
+  small/medium models), ~1e-4 to 2e-4 (large-LM pretraining), 1e-5 to 5e-5 (fine-tuning large models). LR
+  scales **down** as model width grows under standard parametrization — which motivates μP below.
+- **μP (maximal update parametrization) — tune small, transfer large.** Under standard init/LR, the optimal LR
+  drifts with width, so the LR you find on a 100M model is wrong for a 10B model. μP rescales per-layer init
+  variances and LRs so that the optimal HPs become **width- (and, with depth-μP, depth-) invariant**: sweep on
+  a cheap proxy model, then transfer the *same* HPs to the target with no re-sweep. This is now standard
+  practice for serious pretraining (it's how you avoid burning the compute budget on HP search at scale).
+  **u-μP** (ICLR 2025) combines μP with unit scaling for simpler defaults and easier FP8. Caveat: μP needs care
+  (coordinate-check the activations across widths to confirm the transfer actually holds before trusting it).
+- **Schedule:** **linear warmup** (critical for transformers/Adam — a few hundred to a few thousand steps; it
+  lets Adam's second-moment estimate stabilize before large steps and prevents the early-step blowup) then
+  **cosine decay** to ~10% of peak. Alternatives: **linear decay**; **WSD (warmup-stable-decay)** — warmup →
+  long constant-LR "stable" phase → short (~10–20% of steps) decay/cooldown to near-zero. WSD's advantage is
+  *flexibility*: you can branch a decay from any stable-phase checkpoint, so run length need not be fixed in
+  advance, and you can resume/extend. The loss drops sharply during the cooldown ("river-valley" picture —
+  the stable phase travels along a valley, the cooldown descends into it). Empirically WSD ≈ cosine at matched
+  budget. Weight-averaging the stable phase (EMA/LAWA) can approximate the cooldown's gain without a separate
+  decay.
+- **Batch size:** larger = more stable, more parallel, but with diminishing returns past a **critical batch
+  size** (McCandlish et al.) — beyond it, doubling batch no longer halves steps-to-target. The critical batch
+  size *grows* as the loss falls during training, so a fixed large batch is wasteful early and good late
+  (batch-size warmup helps). Scale LR with batch size: **linear** for SGD, **square-root** is the better rule
+  for Adam-family. Use **gradient accumulation** to simulate large batches on limited memory.
 - **Gradient clipping** (by global norm, e.g., 1.0) prevents loss spikes — standard for transformers/RNNs.
+  Log the *pre-clip* grad norm; a sustained rise foreshadows divergence and a sudden spike marks the bad batch.
 - **Mixed precision** (bf16 preferred over fp16; fp16 needs loss scaling): ~2× speed/memory, near-free. See
   [engineering-scale.md](engineering-scale.md).
 
-A reliable from-scratch transformer recipe: AdamW, $\beta_2{=}0.95$, weight decay 0.1, gradient clip 1.0,
-linear warmup → cosine decay, bf16, the largest batch that fits, LR found by range test. Start there, then ablate.
+A reliable from-scratch transformer recipe: AdamW ($\beta_2{=}0.95$, wd 0.1), gradient clip 1.0, linear warmup
+(~1–2% of steps) → cosine decay to 10%, bf16, the largest batch under the critical size, LR found by range test
+(or transferred via μP). Start there, then ablate. For a large pretraining budget, the current frontier swap is
+Muon(+AdamW on 1-D params) with WSD and μP-transferred HPs.
 
 ## 4. The debugging ladder (do these in order)
 
@@ -115,7 +206,26 @@ before the lower rungs pass.
 - Train good, val bad: overfitting (regularize/more data/augment) or **leakage in the other direction** (val is
   easier than it should be — audit splits).
 - Loss spikes mid-training: LR too high for current curvature, bad batch, missing grad clip; lower LR/clip/warmup.
+  For LLMs specifically, attention-logit blowup is a common culprit — add **QK-norm** or **z-loss**
+  (a small penalty on the log-partition $\log\sum e^{z_i}$ that keeps logits bounded). MuonClip's QK-Clip is the
+  same idea for Muon.
 - Val loss noisy/non-monotonic: small val set, high LR, or BatchNorm train/eval mismatch.
+
+**Gradient pathologies — name them precisely.**
+- **Vanishing/exploding gradients.** In a plain deep stack the gradient is a product of $L$ Jacobians; its norm
+  scales like $\prod \|J_l\|$, so it shrinks or blows up exponentially in depth. The structural fixes (not LR
+  band-aids) are **residual connections** (turn the product into a sum of paths) + **normalization** (keep
+  per-layer Jacobian scale ≈ 1) + **variance-preserving init**. If a deep net won't train, check these *before*
+  touching the optimizer.
+- **Dead ReLUs.** A unit whose pre-activation is always negative gets zero gradient forever. Caused by too-high
+  LR (large negative bias drift) or bad init; mitigate with smaller LR, GELU/SiLU/LeakyReLU, or proper init.
+  Monitor the fraction of always-zero activations.
+- **Rank collapse / over-smoothing.** Deep attention without residuals/norm drives all tokens toward the same
+  representation (token uniformity); in GNNs the analog is over-smoothing. Residual + norm + enough heads
+  prevents it; it's a real failure mode in very deep or under-normalized stacks.
+- **Loss-of-plasticity / dead-unit creep** in long or continual training: a growing fraction of units saturate
+  and stop adapting. Weight decay, occasional re-initialization of dead units (continual-backprop), or shrink-
+  and-perturb help; relevant to RL and lifelong setups ([learning-paradigms.md](learning-paradigms.md)).
 
 ## 5. Architecture design principles
 
@@ -154,12 +264,26 @@ log everything to your tracker (see [experimentation-reproducibility.md](experim
 Wrap the model in `torch.compile` for speed and use `DistributedSampler`/FSDP for scale
 ([engineering-scale.md](engineering-scale.md)).
 
+**Mixed precision in one paragraph** (full treatment in [engineering-scale.md](engineering-scale.md) §2,§5).
+Autocast runs the matmul/conv-heavy forward in low precision while keeping a master fp32 copy of the weights
+and doing the optimizer update in fp32. **Prefer bf16**: it shares fp32's exponent range, so gradients don't
+underflow and you need *no* loss scaling — fewer NaNs, simpler code. Use **fp16 only** on hardware without
+bf16, and then with a `GradScaler` (it multiplies the loss up so small gradients survive fp16's narrow range,
+then unscales before the step). Always keep **reductions, the loss, softmax/cross-entropy, and normalization
+statistics in fp32** — that's where low precision bites. The bf16 mantissa is only 8 bits (~2–3 decimal
+digits), so large running sums (EMA, accumulators, very long residual streams) can stagnate; keep those fp32.
+
 ## 7. Transfer learning is usually the right default
 
 Training from scratch is rarely optimal outside research on the pretraining recipe itself. Start from a
 pretrained backbone (ImageNet/DINOv2 for vision, a pretrained LM for text, a foundation model for your
 modality) and fine-tune or use PEFT/LoRA. Covered in [representation-learning.md](representation-learning.md).
 
-**Canonical references:** Goodfellow, Bengio & Courville *Deep Learning*; He et al. 2015 (ResNet); Ioffe &
-Szegedy 2015 (BatchNorm); Ba et al. 2016 (LayerNorm); Kingma & Ba 2015 (Adam); Loshchilov & Hutter 2019
-(AdamW); Karpathy's "A Recipe for Training Neural Networks" (the debugging-ladder ethos).
+**Canonical references:** Goodfellow, Bengio & Courville *Deep Learning*; Prince *Understanding Deep Learning*
+(2023, the current go-to text — free PDF); Murphy *PML* vol. 2; He et al. 2015 (ResNet) & 2016 (identity
+mappings/pre-activation); Ioffe & Szegedy 2015 (BatchNorm); Ba et al. 2016 (LayerNorm); Zhang & Sennrich 2019
+(RMSNorm); Liu et al. 2022 (ConvNeXt); Kingma & Ba 2015 (Adam); Loshchilov & Hutter 2019 (AdamW); Chen et al.
+2023 (Lion); Vyas et al. 2025 (SOAP); Jordan et al. 2024 + Kimi Team 2025 (Muon / MuonClip); Defazio et al.
+2024 (Schedule-Free); Yang et al. 2022 (μP / μTransfer) & u-μP (ICLR 2025); Hu et al. 2024 (WSD / MiniCPM);
+McCandlish et al. 2018 (critical batch size); Karpathy's "A Recipe for Training Neural Networks" (the
+debugging-ladder ethos).
